@@ -1,0 +1,351 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>fuzzysearch — typo-tolerant BM25: WASM vs JS</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2rem; max-width: 66rem; }
+    h1 { font-size: 1.4rem; }
+    p.lede { color: #444; max-width: 56rem; }
+    .hint { font-size: 0.85rem; color: #777; }
+    .note { font-size: 0.82rem; color: #666; background: #f7f5ff; border: 1px solid #e6e1f8;
+      border-radius: 8px; padding: 0.6rem 0.8rem; max-width: 56rem; }
+    .controls { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: flex-end; margin: 1rem 0 0.5rem; }
+    .controls label { font-size: 0.85rem; color: #555; display: flex; flex-direction: column; gap: 0.25rem; }
+    select, button { font: inherit; padding: 0.5rem 0.75rem; border-radius: 8px; border: 1px solid #bbb; }
+    button.go { color: #fff; background: #654ff0; border: 0; font-weight: 600; cursor: pointer; }
+    button.go:disabled { opacity: 0.6; cursor: default; }
+    #q { width: 100%; box-sizing: border-box; padding: 0.6rem 0.75rem; font-size: 1.05rem;
+      border: 1px solid #bbb; border-radius: 8px; margin: 0.25rem 0 0.5rem; }
+    .chips { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0 0 0.75rem; }
+    .chip { font: 12px/1 ui-monospace, monospace; padding: 5px 8px; border-radius: 999px;
+      border: 1px solid #d7d2f5; background: #f7f5ff; color: #4b3fd0; cursor: pointer; }
+    #status { margin: 0.4rem 0; font: 13px/1.5 ui-monospace, monospace; color: #555; }
+    .verdict { font: 13px/1.5 ui-monospace, monospace; margin: 0.4rem 0 0.2rem; }
+    .verdict b { color: #1a7f37; }
+    .verdict .warn { color: #b8860b; }
+    .floor { font: 12px/1.4 ui-monospace, monospace; color: #888; margin: 0 0 1rem; }
+    .cols { display: grid; grid-template-columns: 1fr; gap: 1.5rem; }
+    @media (min-width: 820px) { .cols { grid-template-columns: 1fr 1fr; } }
+    .panel { border: 1px solid #ddd; border-radius: 10px; padding: 1rem 1.25rem; }
+    .panel h2 { font-size: 1.05rem; margin: 0 0 0.5rem; display: flex; align-items: center; gap: 0.5rem; }
+    .badge { font: 11px/1 ui-monospace, monospace; padding: 3px 6px; border-radius: 4px; color: #fff; }
+    .badge.wasm { background: #654ff0; }
+    .badge.js { background: #b8860b; }
+    .timing { font: 13px/1.4 ui-monospace, monospace; margin: 0.3rem 0 0.6rem; }
+    .timing .ms { font-size: 1.7rem; font-weight: 700; }
+    .timing.wasm .ms { color: #654ff0; }
+    .timing.js .ms { color: #b8860b; }
+    ol.results { margin: 0; padding-left: 1.4rem; }
+    ol.results li { padding: 0.25rem 0; }
+    ol.results .t { font-weight: 600; }
+    ol.results .s { font: 11px/1 ui-monospace, monospace; color: #888; margin-left: 0.4rem; }
+    .empty { color: #999; }
+  </style>
+</head>
+<body>
+  <h1>fuzzysearch — typo-tolerant search: WebAssembly vs. JavaScript</h1>
+  <p class="lede">Type a search — <strong>misspellings are fine</strong>. It still finds the right
+     words (<code>serch</code> → <em>search</em>, <code>optimizaton</code> → <em>optimization</em>)
+     and puts the best matches first. The same search runs twice — once in
+     <strong>WebAssembly</strong>, once in plain <strong>JavaScript</strong> — so you can compare
+     their speed. Both return the same results, and it all runs in your browser.</p>
+  <p class="note"><strong>A fair race.</strong> The JavaScript side is ordinary, readable code — not
+     slowed down on purpose. Against hand-tuned JavaScript the gap narrows to about 1.9×</p>
+
+  <div class="controls">
+    <label>Corpus
+      <select id="source">
+        <option value="real" selected>Real content (query-index.json)</option>
+        <option value="synth">Synthetic (large vocabulary)</option>
+      </select>
+    </label>
+    <label>Corpus size
+      <select id="size">
+        <option>2000</option>
+        <option>5000</option>
+        <option selected>10000</option>
+      </select>
+    </label>
+    <label>Fuzziness
+      <select id="fuzz">
+        <option value="0">0 (exact)</option>
+        <option value="1">1</option>
+        <option value="2" selected>2</option>
+      </select>
+    </label>
+    <button class="go" id="build">Build index</button>
+  </div>
+
+  <input id="q" type="search" placeholder="Build the index, then type a query (with typos!)…"
+         autocomplete="off" disabled aria-label="search query">
+  <div class="chips" id="chips"></div>
+
+  <div id="status">loading WASM kernel…</div>
+  <div class="verdict" id="verdict"></div>
+  <div class="floor" id="floor"></div>
+
+  <div class="cols">
+    <section class="panel">
+      <h2>WebAssembly <span class="badge wasm">WASM</span></h2>
+      <p class="timing wasm"><span class="ms">—</span> <span class="unit"></span></p>
+      <ol class="results" id="r-wasm"></ol>
+    </section>
+    <section class="panel">
+      <h2>JavaScript <span class="badge js">idiomatic</span></h2>
+      <p class="timing js"><span class="ms">—</span> <span class="unit"></span></p>
+      <ol class="results" id="r-js"></ol>
+    </section>
+  </div>
+
+  <script type="module">
+    window.hlx = { codeBasePath: '' };
+    const WASM_URL = '/blocks/fuzzysearch/fuzzysearch.wasm';
+    const RUNS = 8; // average each query over a few runs for a stable timing
+    const LIMIT = 10;
+    const $ = (id) => document.getElementById(id);
+    const statusEl = $('status');
+
+    const {
+      buildIndex, buildWasmEngine, tokenize, DEFAULT_K1, DEFAULT_B,
+    } = await import('/blocks/fuzzysearch/search-engine.js');
+
+    // ── Idiomatic JS: the fuzzy-BM25 search a developer would naturally write —
+    // strings + Maps, a textbook full-matrix OSA edit distance (no length filter,
+    // no early-exit), scores in a Map, then a sort. Same model, same results.
+    function levenshteinOSA(a, b) {
+      const m = a.length; const n = b.length;
+      const d = [];
+      for (let i = 0; i <= m; i += 1) { d[i] = new Array(n + 1); d[i][0] = i; }
+      for (let j = 0; j <= n; j += 1) d[0][j] = j;
+      for (let i = 1; i <= m; i += 1) {
+        for (let j = 1; j <= n; j += 1) {
+          const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+          let v = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost);
+          if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
+            v = Math.min(v, d[i - 2][j - 2] + 1);
+          }
+          d[i][j] = v;
+        }
+      }
+      return d[m][n];
+    }
+    function buildIdiomatic(index) {
+      const {
+        vocabChars, vocabOffsets, postOffsets, postDocs, postTf, idf, docLen, vocabCount,
+      } = index;
+      const terms = new Array(vocabCount);
+      const postings = new Map();
+      const idfMap = new Map();
+      for (let t = 0; t < vocabCount; t += 1) {
+        let s = '';
+        for (let c = vocabOffsets[t]; c < vocabOffsets[t + 1]; c += 1) s += String.fromCharCode(vocabChars[c]);
+        terms[t] = s;
+        idfMap.set(s, idf[t]);
+        const arr = [];
+        for (let p = postOffsets[t]; p < postOffsets[t + 1]; p += 1) arr.push({ doc: postDocs[p], tf: postTf[p] });
+        postings.set(s, arr);
+      }
+      return {
+        terms, postings, idfMap, docLen: Array.from(docLen), avgdl: index.avgdl,
+      };
+    }
+    function makeIdiomaticScorer(index, params) {
+      const idio = buildIdiomatic(index);
+      const { k1, b, maxEdits: cap } = params;
+      return (queryTerms) => {
+        const scores = new Map();
+        queryTerms.forEach((term) => {
+          const len = term.length;
+          if (!len) return;
+          let me = len <= 2 ? 0 : (len <= 5 ? 1 : 2);
+          if (me > cap) me = cap;
+          const meDenom = me + 1;
+          const best = new Map();
+          idio.terms.forEach((vt) => {
+            const dist = levenshteinOSA(term, vt);
+            if (dist > me) return;
+            const weight = (1 - dist / meDenom) * idio.idfMap.get(vt);
+            idio.postings.get(vt).forEach(({ doc, tf }) => {
+              const dl = idio.docLen[doc];
+              const denom = tf + k1 * (1 - b + b * dl / idio.avgdl);
+              const s = weight * (tf * (k1 + 1)) / denom;
+              if (!best.has(doc) || s > best.get(doc)) best.set(doc, s);
+            });
+          });
+          best.forEach((s, doc) => scores.set(doc, (scores.get(doc) || 0) + s));
+        });
+        const ranked = [...scores.entries()].filter((e) => e[1] > 0);
+        ranked.sort((x, y) => (y[1] - x[1]) || (x[0] - y[0]));
+        return ranked.slice(0, LIMIT);
+      };
+    }
+
+    // ── synthetic corpus (large vocabulary; real words sampled often) ──
+    function mulberry32(seed) {
+      let a = seed >>> 0;
+      return () => { a |= 0; a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+    }
+    const REAL = ['edge', 'delivery', 'services', 'search', 'index', 'performance', 'optimization',
+      'authoring', 'markup', 'section', 'fragment', 'component', 'tutorial', 'reference', 'overview',
+      'configuration', 'sidekick', 'preview', 'publish', 'document', 'metadata', 'placeholder', 'sitemap',
+      'redirect', 'analytics', 'experiment', 'personalization', 'accessibility', 'lighthouse', 'caching',
+      'security', 'developer', 'content', 'javascript', 'stylesheet', 'responsive', 'template'];
+    const CONS = 'bcdfghklmnprstvw'; const VOW = 'aeiou';
+    function makeCorpus(size) {
+      const rnd = mulberry32(0x9e3779b1 ^ size);
+      const poolSize = Math.min(2000 + size, 18000);
+      const pool = REAL.slice();
+      while (pool.length < poolSize) {
+        const len = 4 + Math.floor(rnd() * 7); let w = '';
+        for (let i = 0; i < len; i += 1) w += (i % 2 === 0 ? CONS[Math.floor(rnd() * CONS.length)] : VOW[Math.floor(rnd() * VOW.length)]);
+        pool.push(w);
+      }
+      const pick = () => { const r = rnd(); return pool[Math.min(Math.floor(r * r * pool.length), pool.length - 1)]; };
+      const texts = new Array(size); const titles = new Array(size);
+      for (let i = 0; i < size; i += 1) {
+        const tn = 3 + Math.floor(rnd() * 3); const bn = 15 + Math.floor(rnd() * 25);
+        const title = []; for (let j = 0; j < tn; j += 1) title.push(pick());
+        const body = []; for (let j = 0; j < bn; j += 1) body.push(pick());
+        titles[i] = title.join(' '); texts[i] = `${titles[i]} ${body.join(' ')}`;
+      }
+      return { texts, titles };
+    }
+
+    // ── real corpus: the site's actual query-index.json (title + description) ──
+    let realDataCache = null;
+    async function loadRealData() {
+      if (!realDataCache) {
+        const res = await fetch('/query-index.json');
+        if (!res.ok) throw new Error(`query-index.json ${res.status}`);
+        realDataCache = (await res.json()).data;
+      }
+      return realDataCache;
+    }
+
+    const PRESETS = ['serch index', 'optimizaton', 'edge deliery servces', 'accessibilty lighthouse', 'perfrmance analytcs', 'confguration'];
+
+    let instance = null;
+    try {
+      const importObject = { env: { abort() {}, trace() {}, seed() { return Date.now(); } } };
+      let res;
+      try { res = await WebAssembly.instantiateStreaming(fetch(WASM_URL), importObject); }
+      catch (e) { res = await WebAssembly.instantiate(await (await fetch(WASM_URL)).arrayBuffer(), importObject); }
+      instance = res.instance;
+      statusEl.textContent = 'WASM kernel ready · pick a size and build the index';
+    } catch (err) {
+      statusEl.textContent = 'WASM kernel failed to load — see console.';
+      console.error(err);
+    }
+
+    let state = null; // { index, titles, wasm, js }
+
+    function timeAvg(fn) {
+      let out = fn();
+      const t0 = performance.now();
+      for (let i = 0; i < RUNS; i += 1) out = fn();
+      return { ms: (performance.now() - t0) / RUNS, out };
+    }
+
+    function renderWasm(el, indices, scores, titles) {
+      el.textContent = '';
+      if (!indices.length) { el.innerHTML = '<li class="empty">No matches</li>'; return; }
+      indices.forEach((i) => {
+        const li = document.createElement('li');
+        const t = document.createElement('span'); t.className = 't'; t.textContent = titles[i];
+        const s = document.createElement('span'); s.className = 's'; s.textContent = scores[i].toFixed(3);
+        li.append(t, s); el.append(li);
+      });
+    }
+    function renderJs(el, ranked, titles) {
+      el.textContent = '';
+      if (!ranked.length) { el.innerHTML = '<li class="empty">No matches</li>'; return; }
+      ranked.forEach(([doc, score]) => {
+        const li = document.createElement('li');
+        const t = document.createElement('span'); t.className = 't'; t.textContent = titles[doc];
+        const s = document.createElement('span'); s.className = 's'; s.textContent = score.toFixed(3);
+        li.append(t, s); el.append(li);
+      });
+    }
+
+    function runQuery() {
+      if (!state) return;
+      const raw = $('q').value.trim();
+      if (!raw) { $('r-wasm').textContent = ''; $('r-js').textContent = ''; $('verdict').innerHTML = ''; return; }
+      const terms = tokenize(raw);
+
+      // WASM: the block's real per-keystroke path — fuzzy-match + BM25 + top-k, all in wasm.
+      const w = timeAvg(() => state.wasm.searchTopK(terms, LIMIT));
+      const wScores = state.wasm.scoreAll(terms); // untimed, for display only
+      // Idiomatic JS: full pipeline (compute + sort + slice).
+      const j = timeAvg(() => state.js(terms));
+
+      renderWasm($('r-wasm'), w.out, wScores, state.titles);
+      renderJs($('r-js'), j.out, state.titles);
+      const docs = `${state.index.docCount.toLocaleString()} docs`;
+      document.querySelector('.timing.wasm .ms').textContent = w.ms.toFixed(2);
+      document.querySelector('.timing.wasm .unit').textContent = `ms · ${docs}`;
+      document.querySelector('.timing.js .ms').textContent = j.ms.toFixed(2);
+      document.querySelector('.timing.js .unit').textContent = `ms · ${docs}`;
+
+      const jDocs = j.out.map((e) => e[0]);
+      const sameTop = w.out.length === jDocs.length && w.out.every((v, i) => v === jDocs[i]);
+      const speed = w.ms > 0 ? (j.ms / w.ms).toFixed(1) : '—';
+      $('verdict').innerHTML = `WASM <b>~${speed}× faster</b> than idiomatic JS`
+        + ` · top-${LIMIT} results ${sameTop ? '<b>identical</b>' : '<span class="warn">differ</span>'}`
+        + ` · vocabulary ${state.index.vocabCount.toLocaleString()} terms`;
+      $('floor').textContent = state.source === 'synth'
+        ? 'Conservative floor: vs a hand-optimized typed-array JS twin the gap is ~1.4× (byte-identical) — see fuzzysearch.bench.mjs.'
+        : `Real site content has only ${state.index.vocabCount} distinct terms, so fuzzy-matching is cheap and the gap is modest here. Switch “Corpus” to Synthetic to stress a large vocabulary.`;
+    }
+
+    async function build() {
+      if (!instance) return;
+      $('build').disabled = true; $('q').disabled = true;
+      const source = $('source').value;
+      const size = parseInt($('size').value, 10);
+      const maxEdits = parseInt($('fuzz').value, 10);
+      let texts; let titles;
+      try {
+        if (source === 'real') {
+          statusEl.textContent = `Loading query-index.json (up to ${size.toLocaleString()} docs)…`;
+          await new Promise((r) => setTimeout(r));
+          const rows = (await loadRealData()).slice(0, size);
+          titles = rows.map((r) => r.title || r.path);
+          texts = rows.map((r) => `${r.title || ''} ${r.description || ''}`);
+        } else {
+          statusEl.textContent = `Building ${size.toLocaleString()} synthetic documents…`;
+          await new Promise((r) => setTimeout(r));
+          ({ texts, titles } = makeCorpus(size));
+        }
+      } catch (err) {
+        statusEl.textContent = `Could not load corpus — ${err.message}`;
+        $('build').disabled = false;
+        return;
+      }
+      const index = buildIndex(texts);
+      const params = { k1: DEFAULT_K1, b: DEFAULT_B, maxEdits };
+      const wasm = buildWasmEngine(instance, index, params);
+      const js = makeIdiomaticScorer(index, params);
+      state = {
+        index, titles, wasm, js, source,
+      };
+      statusEl.textContent = `Indexed ${index.docCount.toLocaleString()} docs · ${index.vocabCount.toLocaleString()} vocabulary terms · fuzziness ${maxEdits} · type a query`;
+      $('q').disabled = false; $('build').disabled = false; $('q').focus();
+      runQuery();
+    }
+
+    PRESETS.forEach((p) => {
+      const c = document.createElement('span'); c.className = 'chip'; c.textContent = p;
+      c.addEventListener('click', () => { $('q').value = p; runQuery(); });
+      $('chips').append(c);
+    });
+
+    $('build').addEventListener('click', build);
+    let frame = 0;
+    $('q').addEventListener('input', () => { cancelAnimationFrame(frame); frame = requestAnimationFrame(runQuery); });
+  </script>
+</body>
+</html>

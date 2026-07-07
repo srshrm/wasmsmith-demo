@@ -1,0 +1,75 @@
+.semanticsearch {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.semanticsearch .semanticsearch-status {
+  margin: 0;
+  font-size: 0.9rem;
+  color: #555;
+}
+
+.semanticsearch .semanticsearch-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.semanticsearch .semanticsearch-list button {
+  padding: 0.4rem 0.8rem;
+  font: inherit;
+  font-size: 0.85rem;
+  color: #333;
+  cursor: pointer;
+  background: #f2f0fb;
+  border: 1px solid #ddd8f5;
+  border-radius: 999px;
+}
+
+.semanticsearch .semanticsearch-list button:hover {
+  background: #e6e1f8;
+}
+
+.semanticsearch .semanticsearch-list button[aria-current="true"] {
+  color: #fff;
+  background: #654ff0;
+  border-color: #654ff0;
+}
+
+.semanticsearch .semanticsearch-heading {
+  margin: 0 0 0.5rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.semanticsearch .semanticsearch-results ol {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.semanticsearch .semanticsearch-results li {
+  display: flex;
+  gap: 0.75rem;
+  align-items: baseline;
+}
+
+.semanticsearch .semanticsearch-score {
+  min-width: 3rem;
+  font-weight: 700;
+  color: #654ff0;
+  text-align: right;
+}
+
+@media (width >= 600px) {
+  .semanticsearch .semanticsearch-list {
+    max-width: 640px;
+  }
+}

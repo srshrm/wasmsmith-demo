@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>svgpng — PNG encode: WASM vs JS</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2rem; max-width: 64rem; }
+    h1 { font-size: 1.4rem; }
+    p.lede { color: #444; max-width: 52rem; }
+    .controls { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: flex-end; margin: 1rem 0; }
+    .controls label { font-size: 0.85rem; color: #555; display: flex; flex-direction: column; gap: 0.25rem; }
+    textarea { width: 100%; min-height: 7rem; font: 12px/1.4 ui-monospace, monospace; padding: 0.5rem;
+      border: 1px solid #bbb; border-radius: 8px; box-sizing: border-box; }
+    select, button { font: inherit; padding: 0.5rem 0.75rem; border-radius: 8px; border: 1px solid #bbb; }
+    button.go { color: #fff; background: #654ff0; border: 0; font-weight: 600; cursor: pointer; }
+    button.go:disabled { opacity: 0.6; cursor: default; }
+    #status { margin: 0.5rem 0 1rem; font: 13px/1.5 ui-monospace, monospace; color: #555; }
+    .verdict { font: 13px/1.5 ui-monospace, monospace; margin: 0.5rem 0 1rem; }
+    .verdict b { color: #1a7f37; }
+    .cols { display: grid; grid-template-columns: 1fr; gap: 1.5rem; }
+    @media (min-width: 800px) { .cols { grid-template-columns: 1fr 1fr; } }
+    .panel { border: 1px solid #ddd; border-radius: 10px; padding: 1rem 1.25rem; }
+    .panel h2 { font-size: 1.05rem; margin: 0 0 0.5rem; display: flex; align-items: center; gap: 0.5rem; }
+    .badge { font: 11px/1 ui-monospace, monospace; padding: 3px 6px; border-radius: 4px; color: #fff; }
+    .badge.wasm { background: #654ff0; }
+    .badge.js { background: #b8860b; }
+    .timing { font: 13px/1.4 ui-monospace, monospace; margin: 0.3rem 0; }
+    .timing .ms { font-size: 1.7rem; font-weight: 700; }
+    .timing.wasm .ms { color: #654ff0; }
+    .timing.js .ms { color: #b8860b; }
+    .meta { font: 12px/1.5 ui-monospace, monospace; color: #666; }
+    img.out { max-width: 100%; height: auto; margin-top: 0.5rem; border: 1px solid #ddd; border-radius: 6px;
+      background: repeating-conic-gradient(#eee 0% 25%, #fff 0% 50%) 50% / 20px 20px; }
+    .hint { font-size: 0.85rem; color: #777; }
+  </style>
+</head>
+<body>
+  <h1>svgpng — PNG encoding: WebAssembly vs. JavaScript</h1>
+  <p class="lede">This turns a drawing into a compressed <strong>PNG image</strong> — the
+     number-crunching part of saving a picture. The same job runs in <strong>WebAssembly</strong>
+     and in plain <strong>JavaScript</strong> so you can compare their speed. Both produce the exact
+     same image; only the time differs.</p>
+  <p class="hint">Edit the SVG or paste your own, pick a size, and convert.</p>
+
+  <div class="controls">
+    <label style="flex: 1 1 100%;">SVG markup
+      <textarea id="svg"></textarea>
+    </label>
+    <label>Output size
+      <select id="size">
+        <option>256</option>
+        <option selected>512</option>
+        <option>768</option>
+        <option>1024</option>
+      </select>
+    </label>
+    <button class="go" id="go" disabled>Encode with both</button>
+  </div>
+
+  <div id="status">loading WASM encoder…</div>
+  <div class="verdict" id="verdict"></div>
+
+  <div class="cols">
+    <section class="panel">
+      <h2>WebAssembly <span class="badge wasm">WASM</span></h2>
+      <p class="timing wasm"><span class="ms">—</span> <span class="unit"></span></p>
+      <p class="meta" id="meta-wasm"></p>
+      <img class="out" id="img-wasm" alt="WASM PNG output" hidden>
+    </section>
+    <section class="panel">
+      <h2>JavaScript <span class="badge js">JS twin</span></h2>
+      <p class="timing js"><span class="ms">—</span> <span class="unit"></span></p>
+      <p class="meta" id="meta-js"></p>
+      <img class="out" id="img-js" alt="JS PNG output" hidden>
+    </section>
+  </div>
+
+  <script type="module">
+    window.hlx = { codeBasePath: '' };
+    const WASM_URL = '/blocks/svgpng/svgpng.wasm';
+    const RUNS = 3; // average a few encodes for a stable number
+
+    const SAMPLE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#654ff0"/>
+      <stop offset="1" stop-color="#22d3ee"/>
+    </linearGradient>
+  </defs>
+  <rect width="240" height="240" fill="url(#g)"/>
+  <circle cx="80" cy="90" r="54" fill="#ffd23f"/>
+  <rect x="120" y="120" width="96" height="96" rx="14" fill="#ff5d73"/>
+  <polygon points="60,200 96,140 132,200" fill="#0b8457"/>
+  <text x="20" y="40" font-family="sans-serif" font-size="26" fill="#fff">WASM</text>
+</svg>`;
+
+    const $ = (id) => document.getElementById(id);
+    const statusEl = $('status');
+    $('svg').value = SAMPLE_SVG;
+
+    const [{ createSvgPngEngine, wrapPng }, { default: encodeZlibJs }] = await Promise.all([
+      import('/blocks/svgpng/svgpng-engine.js'),
+      import('/test/png-encoder-js.js'),
+    ]);
+
+    let engine;
+    try {
+      engine = await createSvgPngEngine(WASM_URL);
+      statusEl.textContent = 'WASM encoder ready · edit the SVG and click Encode';
+      $('go').disabled = false;
+    } catch (err) {
+      statusEl.textContent = 'WASM encoder failed to load — see console.';
+      // eslint-disable-next-line no-console
+      console.error(err);
+    }
+
+    function rasterize(svgText, w, h) {
+      return new Promise((resolve, reject) => {
+        const url = URL.createObjectURL(new Blob([svgText], { type: 'image/svg+xml' }));
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          canvas.width = w;
+          canvas.height = h;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0, w, h);
+          URL.revokeObjectURL(url);
+          try {
+            resolve(ctx.getImageData(0, 0, w, h).data);
+          } catch (e) {
+            reject(e);
+          }
+        };
+        img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('invalid SVG')); };
+        img.src = url;
+      });
+    }
+
+    // time a function over RUNS iterations, return average ms
+    function timeAvg(fn) {
+      fn(); // warm
+      const t0 = performance.now();
+      for (let i = 0; i < RUNS; i += 1) fn();
+      return (performance.now() - t0) / RUNS;
+    }
+
+    let urls = [];
+    function show(imgId, metaId, png, raw) {
+      // Note: do NOT revoke here — both panels are shown in the same run, and
+      // revoking the just-created WASM URL before the browser loads it would
+      // break that <img> (it would fall back to its alt text). Previous-run URLs
+      // are revoked once at the start of run().
+      const url = URL.createObjectURL(new Blob([png], { type: 'image/png' }));
+      urls.push(url);
+      const el = $(imgId);
+      el.src = url;
+      el.hidden = false;
+      $(metaId).textContent = `${(png.length / 1024).toFixed(1)} KB PNG · ${(raw / png.length).toFixed(1)}× smaller than raw`;
+    }
+
+    async function run() {
+      const w = parseInt($('size').value, 10);
+      const h = w;
+      $('go').disabled = true;
+      statusEl.textContent = `Rasterizing ${w}×${h} on the canvas…`;
+      let pixels;
+      try {
+        pixels = await rasterize($('svg').value, w, h);
+      } catch (e) {
+        statusEl.textContent = 'Could not rasterize that SVG.';
+        $('go').disabled = false;
+        return;
+      }
+      const raw = w * h * 4;
+      statusEl.textContent = `Encoding ${w}×${h} (${(raw / 1024 / 1024).toFixed(1)} MB of pixels)…`;
+
+      // WASM
+      let wasmPng;
+      const wasmMs = timeAvg(() => { wasmPng = engine.toPng(pixels, w, h); });
+      // JS twin
+      let jsPng;
+      const jsMs = timeAvg(() => { jsPng = wrapPng(encodeZlibJs(pixels, w, h), w, h); });
+
+      // Revoke the PREVIOUS run's blob URLs now (their images have been shown);
+      // never revoke a URL created within this same run.
+      urls.forEach((u) => URL.revokeObjectURL(u));
+      urls = [];
+      show('img-wasm', 'meta-wasm', wasmPng, raw);
+      show('img-js', 'meta-js', jsPng, raw);
+      document.querySelector('.timing.wasm .ms').textContent = wasmMs.toFixed(1);
+      document.querySelector('.timing.wasm .unit').textContent = 'ms to encode';
+      document.querySelector('.timing.js .ms').textContent = jsMs.toFixed(1);
+      document.querySelector('.timing.js .unit').textContent = 'ms to encode';
+
+      // byte-identical check
+      let identical = wasmPng.length === jsPng.length;
+      for (let i = 0; identical && i < wasmPng.length; i += 1) if (wasmPng[i] !== jsPng[i]) identical = false;
+      const speed = (jsMs / wasmMs).toFixed(1);
+      $('verdict').innerHTML = identical
+        ? `Outputs are <b>byte-identical ✓</b> — WASM encoded the same PNG <b>~${speed}× faster</b>.`
+        : 'Outputs DIFFER — this should not happen; check the console.';
+      statusEl.textContent = `Done · ${w}×${h} · averaged over ${RUNS} runs`;
+      $('go').disabled = false;
+    }
+
+    $('go').addEventListener('click', run);
+  </script>
+</body>
+</html>

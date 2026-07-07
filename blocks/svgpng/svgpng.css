@@ -1,0 +1,58 @@
+.svgpng {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  align-items: flex-start;
+}
+
+.svgpng .svgpng-convert {
+  padding: 0.6rem 1.1rem;
+  font: inherit;
+  font-weight: 600;
+  color: #fff;
+  background: #654ff0;
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.svgpng .svgpng-convert:hover {
+  background: #5340d8;
+}
+
+.svgpng .svgpng-convert:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.svgpng .svgpng-status {
+  margin: 0;
+  font-size: 0.9rem;
+  color: #555;
+}
+
+.svgpng .svgpng-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.svgpng .svgpng-out {
+  max-width: 100%;
+  height: auto;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  background:
+    repeating-conic-gradient(#eee 0% 25%, #fff 0% 50%) 50% / 20px 20px; /* checkerboard for alpha */
+}
+
+.svgpng .svgpng-download {
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+@media (width >= 600px) {
+  .svgpng .svgpng-out {
+    max-width: 480px;
+  }
+}

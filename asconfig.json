@@ -1,0 +1,22 @@
+{
+  "//": "Single source of truth for AssemblyScript build flags. compile.sh invokes `asc <entry> --config asconfig.json --target release|debug --outFile ...`, so all optimization/runtime flags live HERE (not duplicated on the CLI). Editors/asc also pick these up.",
+  "options": {
+    "runtime": "stub",
+    "exportRuntime": false,
+    "bindings": "raw",
+    "exportStart": false,
+    "enable": ["simd"]
+  },
+  "targets": {
+    "release": {
+      "optimizeLevel": 3,
+      "shrinkLevel": 0,
+      "converge": false,
+      "noAssert": true
+    },
+    "debug": {
+      "debug": true,
+      "sourceMap": true
+    }
+  }
+}

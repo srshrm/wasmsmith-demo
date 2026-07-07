@@ -1,0 +1,48 @@
+{
+  "name": "semanticsearch",
+  "description": "SIMD cosine-similarity nearest-neighbour search over content embeddings. Vectors are L2-normalized by the host, so cosine == dot product; the kernel does a 4-wide f32x4 dot-product sweep.",
+  "build": {
+    "source": "assembly/semanticsearch.ts",
+    "flags": "-O3 --runtime stub --noAssert --enable simd",
+    "features": ["simd"]
+  },
+  "exports": {
+    "reset": { "params": [], "returns": "void", "doc": "rewind the bump allocator" },
+    "alloc": {
+      "params": [{ "name": "byteLen", "type": "i32" }],
+      "returns": "i32",
+      "doc": "reserve byteLen bytes (8-byte aligned), growing linear memory; returns byte ptr"
+    },
+    "cosine": {
+      "params": [
+        { "name": "queryPtr", "type": "i32" },
+        { "name": "corpusPtr", "type": "i32" },
+        { "name": "count", "type": "i32" },
+        { "name": "dim", "type": "i32" },
+        { "name": "outPtr", "type": "i32" }
+      ],
+      "returns": "void",
+      "doc": "OUT f32[count]: cosine similarity (dot of unit vectors) of query vs each doc"
+    },
+    "cosineTopK": {
+      "params": [
+        { "name": "queryPtr", "type": "i32" },
+        { "name": "corpusPtr", "type": "i32" },
+        { "name": "count", "type": "i32" },
+        { "name": "dim", "type": "i32" },
+        { "name": "k", "type": "i32" },
+        { "name": "outPtr", "type": "i32" }
+      ],
+      "returns": "i32",
+      "doc": "fused single-pass top-k; OUT {i32 index; f32 score}[k] best-first; returns count written (<=k)"
+    },
+    "memory": { "type": "WebAssembly.Memory", "doc": "default exported linear memory" }
+  },
+  "memory": [
+    { "name": "corpus", "view": "f32", "unit": "float", "length": "count*dim", "direction": "in", "note": "row-major, L2-normalized document embeddings" },
+    { "name": "query", "view": "f32", "unit": "float", "length": "dim", "direction": "in", "note": "L2-normalized query embedding" },
+    { "name": "scores", "view": "f32", "unit": "float", "length": "count", "direction": "out", "note": "cosine() output" },
+    { "name": "topk", "view": "mixed", "unit": "byte", "length": "k*8", "direction": "out", "note": "cosineTopK() output: {i32 index; f32 score} per 8-byte slot" }
+  ],
+  "notes": "Query embedding must come from the same model as the document embeddings. Typical use is 'find similar to this document' (query = an existing doc vector). Embeddings are precomputed and shipped as a static JSON asset; no model runs client-side."
+}

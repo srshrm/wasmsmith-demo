@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>fuzzysearch — standalone smoke test</title>
+  <link rel="stylesheet" href="/blocks/fuzzysearch/fuzzysearch.css">
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2rem; max-width: 42rem; }
+    h1 { font-size: 1.25rem; }
+    #log { margin-top: 1rem; padding: 0.75rem; background: #f4f4f4; border-radius: 6px; white-space: pre-wrap; font: 12px/1.5 ui-monospace, monospace; }
+  </style>
+</head>
+<body>
+  <h1>fuzzysearch — standalone smoke test</h1>
+  <p>Type in the box; results score in WASM.</p>
+
+  <!-- EDS block markup: a config table the block decorates. -->
+  <div class="fuzzysearch block" data-block-name="fuzzysearch">
+    <div><div>source</div><div>/test/query-index.json</div></div>
+    <div><div>placeholder</div><div>Search the docs…</div></div>
+    <div><div>limit</div><div>8</div></div>
+  </div>
+
+  <div id="log">loading…</div>
+
+  <script type="module">
+    // Shim the global the block reads for the asset base path.
+    window.hlx = { codeBasePath: '' };
+
+    const log = (m) => { document.getElementById('log').textContent = m; };
+
+    import('/blocks/fuzzysearch/fuzzysearch.js').then(async ({ default: decorate }) => {
+      const block = document.querySelector('.fuzzysearch');
+      await decorate(block);
+      // Drive a query programmatically so the test is self-checking.
+      const input = block.querySelector('.fuzzysearch-input');
+      input.focus();
+      input.value = 'imag';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      // Give lazy init + rAF a moment, then report.
+      setTimeout(() => {
+        const status = block.querySelector('.fuzzysearch-status')?.textContent || '';
+        const hits = [...block.querySelectorAll('.fuzzysearch-results > li > a')]
+          .map((a) => a.textContent);
+        log(`status: ${status}\nquery "imag" → ${hits.length} hits:\n  ${hits.join('\n  ')}`);
+      }, 600);
+    }).catch((e) => log(`ERROR: ${e.message}`));
+  </script>
+</body>
+</html>

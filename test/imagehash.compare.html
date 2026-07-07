@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>imagehash — pHash fingerprinting: WASM vs JS</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2rem; max-width: 66rem; }
+    h1 { font-size: 1.4rem; }
+    p.lede { color: #444; max-width: 54rem; }
+    .controls { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: flex-end; margin: 1rem 0; }
+    .controls label { font-size: 0.85rem; color: #555; display: flex; flex-direction: column; gap: 0.25rem; }
+    select, button { font: inherit; padding: 0.5rem 0.75rem; border-radius: 8px; border: 1px solid #bbb; }
+    button.go { color: #fff; background: #654ff0; border: 0; font-weight: 600; cursor: pointer; }
+    button.go:disabled { opacity: 0.6; cursor: default; }
+    #status { margin: 0.5rem 0 1rem; font: 13px/1.5 ui-monospace, monospace; color: #555; }
+    .verdict { font: 13px/1.5 ui-monospace, monospace; margin: 0.5rem 0 1rem; }
+    .verdict b { color: #1a7f37; }
+    .cols { display: grid; grid-template-columns: 1fr; gap: 1.5rem; }
+    @media (min-width: 800px) { .cols { grid-template-columns: 1fr 1fr; } }
+    .panel { border: 1px solid #ddd; border-radius: 10px; padding: 1rem 1.25rem; }
+    .panel h2 { font-size: 1.05rem; margin: 0 0 0.5rem; display: flex; align-items: center; gap: 0.5rem; }
+    .badge { font: 11px/1 ui-monospace, monospace; padding: 3px 6px; border-radius: 4px; color: #fff; }
+    .badge.wasm { background: #654ff0; }
+    .badge.js { background: #b8860b; }
+    .timing { font: 13px/1.4 ui-monospace, monospace; margin: 0.3rem 0; }
+    .timing .ms { font-size: 1.7rem; font-weight: 700; }
+    .timing.wasm .ms { color: #654ff0; }
+    .timing.js .ms { color: #b8860b; }
+    h3 { font-size: 1rem; margin: 1.5rem 0 0.5rem; }
+    .pair { display: inline-flex; gap: 4px; padding: 6px; margin: 4px; background: #faf9ff;
+      border: 1px solid #e6e1f8; border-radius: 8px; vertical-align: top; }
+    .pair canvas { width: 64px; height: 64px; image-rendering: pixelated; border-radius: 4px; }
+    .pair .d { font: 11px/1 ui-monospace, monospace; color: #654ff0; align-self: center; }
+    .hint { font-size: 0.85rem; color: #777; }
+  </style>
+</head>
+<body>
+  <h1>imagehash — perceptual-hash fingerprinting: WebAssembly vs. JavaScript</h1>
+  <p class="lede">Every image gets a short <strong>fingerprint</strong> so look-alikes can be
+     spotted. Working it out is heavy math: the <strong>WebAssembly</strong> version crunches
+     four numbers at a time while <strong>JavaScript</strong> does one, so across a whole library
+     the gap adds up. Both flag the same near-duplicates.</p>
+
+  <div class="controls">
+    <label>Library size
+      <select id="size">
+        <option>1000</option>
+        <option selected>5000</option>
+        <option>10000</option>
+        <option>20000</option>
+      </select>
+    </label>
+    <button class="go" id="go" disabled>Fingerprint with both</button>
+  </div>
+
+  <div id="status">loading WASM kernel…</div>
+  <div class="verdict" id="verdict"></div>
+
+  <div class="cols">
+    <section class="panel">
+      <h2>WebAssembly <span class="badge wasm">SIMD</span></h2>
+      <p class="timing wasm"><span class="ms">—</span> <span class="unit"></span></p>
+    </section>
+    <section class="panel">
+      <h2>JavaScript <span class="badge js">scalar</span></h2>
+      <p class="timing js"><span class="ms">—</span> <span class="unit"></span></p>
+    </section>
+  </div>
+
+  <h3 id="dups-title" hidden>Detected near-duplicate pairs</h3>
+  <div id="dups"></div>
+
+  <script type="module">
+    window.hlx = { codeBasePath: '' };
+    const WASM_URL = '/blocks/imagehash/imagehash.wasm';
+    const N = 32;
+    const BLK = 8;
+    const RUNS = 3;
+    const $ = (id) => document.getElementById(id);
+    const statusEl = $('status');
+
+    const { createImageHashEngine, buildCosTable, hamming } =
+      await import('/blocks/imagehash/imagehash-engine.js');
+    const COS = buildCosTable();
+
+    function mulberry32(seed) {
+      let a = seed >>> 0;
+      return () => {
+        a |= 0; a = (a + 0x6d2b79f5) | 0;
+        let t = Math.imul(a ^ (a >>> 15), 1 | a);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+    }
+    const clamp255 = (v) => (v < 0 ? 0 : (v > 255 ? 255 : v));
+
+    function makeLibrary(count, seed) {
+      const rnd = mulberry32(seed);
+      const flat = new Float32Array(count * N * N);
+      for (let n = 0; n < count; n += 1) {
+        const base = n * N * N;
+        const fx = 1 + Math.floor(rnd() * 4); const fy = 1 + Math.floor(rnd() * 4);
+        const phase = rnd() * 6.283; const amp = 40 + rnd() * 80; const dc = 80 + rnd() * 80;
+        for (let y = 0; y < N; y += 1) {
+          for (let x = 0; x < N; x += 1) {
+            flat[base + y * N + x] = clamp255(dc + amp * Math.sin(((fx * x + fy * y) / N) * 6.283 + phase) + (rnd() - 0.5) * 10);
+          }
+        }
+      }
+      const dupPairs = [];
+      const nd = Math.max(3, Math.floor(count * 0.005));
+      for (let k = 0; k < nd; k += 1) {
+        const src = Math.floor(rnd() * count);
+        const dst = (src + 1 + Math.floor(rnd() * (count - 1))) % count;
+        for (let i = 0; i < N * N; i += 1) flat[dst * N * N + i] = clamp255(flat[src * N * N + i] + (rnd() - 0.5) * 3);
+        dupPairs.push([src, dst]);
+      }
+      return { flat, dupPairs };
+    }
+
+    // Scalar-JS pHash (DCT + median threshold) — the baseline to beat.
+    function phashAllJS(flat, count) {
+      const T = new Float64Array(N * BLK);
+      const hashes = [];
+      for (let n = 0; n < count; n += 1) {
+        const g = n * N * N;
+        for (let y = 0; y < N; y += 1) {
+          for (let u = 0; u < BLK; u += 1) {
+            let s = 0;
+            for (let x = 0; x < N; x += 1) s += flat[g + y * N + x] * COS[x * N + u];
+            T[y * BLK + u] = s;
+          }
+        }
+        const coeff = new Float32Array(64);
+        for (let v = 0; v < BLK; v += 1) {
+          for (let u = 0; u < BLK; u += 1) {
+            let s = 0;
+            for (let y = 0; y < N; y += 1) s += T[y * BLK + u] * COS[y * N + v];
+            coeff[v * BLK + u] = s;
+          }
+        }
+        const sorted = Array.from(coeff).sort((a, b) => a - b);
+        const median = (sorted[31] + sorted[32]) * 0.5;
+        let lo = 0; let hi = 0;
+        for (let i = 0; i < 64; i += 1) {
+          if (coeff[i] > median) {
+            if (i < 32) lo = (lo | (1 << i)) >>> 0; else hi = (hi | (1 << (i - 32))) >>> 0;
+          }
+        }
+        hashes.push(Uint32Array.of(lo >>> 0, hi >>> 0));
+      }
+      return hashes;
+    }
+
+    function drawGray(flat, index, canvas) {
+      const g = canvas.getContext('2d');
+      const img = g.createImageData(N, N);
+      const base = index * N * N;
+      for (let i = 0; i < N * N; i += 1) {
+        const v = flat[base + i];
+        img.data[i * 4] = v; img.data[i * 4 + 1] = v; img.data[i * 4 + 2] = v; img.data[i * 4 + 3] = 255;
+      }
+      g.putImageData(img, 0, 0);
+    }
+
+    let engineApi;
+    try {
+      engineApi = await createImageHashEngine(WASM_URL);
+      statusEl.textContent = 'WASM kernel ready · pick a size and fingerprint';
+      $('go').disabled = false;
+    } catch (err) {
+      statusEl.textContent = 'WASM kernel failed to load — see console.';
+      console.error(err);
+    }
+
+    function timeAvg(fn) {
+      fn();
+      const t0 = performance.now();
+      for (let i = 0; i < RUNS; i += 1) fn();
+      return (performance.now() - t0) / RUNS;
+    }
+
+    async function run() {
+      $('go').disabled = true;
+      const count = parseInt($('size').value, 10);
+      statusEl.textContent = `Building ${count.toLocaleString()} synthetic images…`;
+      await new Promise((r) => setTimeout(r));
+      const { flat, dupPairs } = makeLibrary(count, 0xF00D ^ count);
+      const hasher = engineApi.hasher(count);
+
+      statusEl.textContent = `Fingerprinting ${count.toLocaleString()} images…`;
+      await new Promise((r) => setTimeout(r));
+      let wasmHashes;
+      const wasmMs = timeAvg(() => { wasmHashes = hasher.hashAll(flat, count); });
+      let jsHashes;
+      const jsMs = timeAvg(() => { jsHashes = phashAllJS(flat, count); });
+
+      document.querySelector('.timing.wasm .ms').textContent = wasmMs.toFixed(1);
+      document.querySelector('.timing.wasm .unit').textContent = 'ms to fingerprint';
+      document.querySelector('.timing.js .ms').textContent = jsMs.toFixed(1);
+      document.querySelector('.timing.js .unit').textContent = 'ms to fingerprint';
+
+      // Agreement between the two fingerprint sets (avg Hamming — usually 0).
+      let totalBits = 0;
+      for (let i = 0; i < count; i += 1) totalBits += hamming(wasmHashes[i], jsHashes[i]);
+      const avgBits = (totalBits / count).toFixed(2);
+      const detected = dupPairs.filter(([a, b]) => hamming(wasmHashes[a], wasmHashes[b]) <= 8).length;
+      const speed = (jsMs / wasmMs).toFixed(1);
+      $('verdict').innerHTML = `WASM fingerprinted the library <b>~${speed}× faster</b> · `
+        + `WASM vs JS fingerprints differ by <b>${avgBits} bits/image</b> on average · `
+        + `found <b>${detected}/${dupPairs.length}</b> planted near-duplicates (Hamming ≤ 8).`;
+      statusEl.textContent = `Done · ${count.toLocaleString()} images · averaged over ${RUNS} runs`;
+
+      // Show a few detected near-duplicate pairs, upscaled from their grayscale.
+      const dupsEl = $('dups');
+      dupsEl.textContent = '';
+      $('dups-title').hidden = false;
+      dupPairs.slice(0, 8).forEach(([a, b]) => {
+        const d = hamming(wasmHashes[a], wasmHashes[b]);
+        const wrap = document.createElement('div');
+        wrap.className = 'pair';
+        const ca = document.createElement('canvas'); ca.width = N; ca.height = N;
+        const cb = document.createElement('canvas'); cb.width = N; cb.height = N;
+        drawGray(flat, a, ca); drawGray(flat, b, cb);
+        const label = document.createElement('span'); label.className = 'd'; label.textContent = `${d}b`;
+        wrap.append(ca, label, cb);
+        dupsEl.append(wrap);
+      });
+      $('go').disabled = false;
+    }
+
+    $('go').addEventListener('click', run);
+  </script>
+</body>
+</html>

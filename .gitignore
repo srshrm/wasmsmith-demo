@@ -3,6 +3,9 @@ coverage/*
 logs/*
 node_modules/*
 
+# wasmsmith: AssemblyScript compile staging (only the .wasm is copied to blocks/)
+build/*
+
 helix-importer-ui
 .DS_Store
 *.bak

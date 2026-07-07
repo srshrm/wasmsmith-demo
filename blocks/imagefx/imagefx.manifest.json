@@ -1,0 +1,40 @@
+{
+  "name": "imagefx",
+  "description": "SIMD separable Gaussian blur for live image effects. Each RGBA pixel is widened to an i32x4 and the multiply-accumulate over the (2r+1)-tap kernel runs 4 channels at once; JS has no vector type and processes one channel at a time.",
+  "build": {
+    "source": "assembly/imagefx.ts",
+    "flags": "-O3 --runtime stub --noAssert --enable simd",
+    "features": ["simd"]
+  },
+  "exports": {
+    "reset": { "params": [], "returns": "void", "doc": "rewind the bump allocator" },
+    "alloc": {
+      "params": [{ "name": "byteLen", "type": "i32" }],
+      "returns": "i32",
+      "doc": "reserve byteLen bytes (8-byte aligned), growing linear memory; returns byte ptr"
+    },
+    "blur": {
+      "params": [
+        { "name": "srcPtr", "type": "i32" },
+        { "name": "tmpPtr", "type": "i32" },
+        { "name": "dstPtr", "type": "i32" },
+        { "name": "width", "type": "i32" },
+        { "name": "height", "type": "i32" },
+        { "name": "weightsPtr", "type": "i32" },
+        { "name": "radius", "type": "i32" },
+        { "name": "recip", "type": "i32" },
+        { "name": "shift", "type": "i32" }
+      ],
+      "returns": "void",
+      "doc": "separable Gaussian blur src->tmp (horizontal) then tmp->dst (vertical); clamp-to-edge; out = clamp((sum*recip)>>shift, 0, 255)"
+    },
+    "memory": { "type": "WebAssembly.Memory", "doc": "default exported linear memory" }
+  },
+  "memory": [
+    { "name": "src", "view": "u8", "unit": "byte", "length": "width*height*4 + 16", "direction": "in", "note": "RGBA source; 16-byte slack so 16-byte SIMD loads never over-read past memory" },
+    { "name": "tmp", "view": "u8", "unit": "byte", "length": "width*height*4 + 16", "direction": "scratch", "note": "intermediate after the horizontal pass" },
+    { "name": "dst", "view": "u8", "unit": "byte", "length": "width*height*4 + 16", "direction": "out", "note": "RGBA blurred result" },
+    { "name": "weights", "view": "i32", "unit": "int", "length": "2*radius+1", "direction": "in", "note": "integer Gaussian tap weights (host-supplied, sum ~= 4096)" }
+  ],
+  "notes": "Integer fixed-point math (weights + recip/shift) makes the WASM output byte-identical to a scalar-JS twin. Image rasterization (decode/scale) is done by the native canvas; only the blur runs in WASM. src/tmp/dst must be distinct buffers."
+}

@@ -1,0 +1,53 @@
+.imagefx {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  align-items: flex-start;
+}
+
+.imagefx .imagefx-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  align-items: center;
+  width: 100%;
+}
+
+.imagefx .imagefx-label {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #333;
+}
+
+.imagefx .imagefx-slider {
+  width: 220px;
+  accent-color: #654ff0;
+}
+
+.imagefx .imagefx-readout {
+  min-width: 3.5rem;
+  font-variant-numeric: tabular-nums;
+  color: #654ff0;
+}
+
+.imagefx .imagefx-canvas {
+  max-width: 100%;
+  height: auto;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+}
+
+.imagefx .imagefx-status {
+  margin: 0;
+  font-size: 0.85rem;
+  color: #555;
+}
+
+@media (width >= 600px) {
+  .imagefx .imagefx-canvas {
+    max-width: 640px;
+  }
+}

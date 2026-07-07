@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>semanticsearch — cosine ranking: WASM vs JS</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2rem; max-width: 64rem; }
+    h1 { font-size: 1.4rem; }
+    p.lede { color: #444; max-width: 52rem; }
+    .controls { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: flex-end; margin: 1rem 0; }
+    .controls label { font-size: 0.85rem; color: #555; display: flex; flex-direction: column; gap: 0.25rem; }
+    select, button { font: inherit; padding: 0.5rem 0.75rem; border-radius: 8px; border: 1px solid #bbb; }
+    button.go { color: #fff; background: #654ff0; border: 0; font-weight: 600; cursor: pointer; }
+    button.go:disabled { opacity: 0.6; cursor: default; }
+    #status { margin: 0.5rem 0 1rem; font: 13px/1.5 ui-monospace, monospace; color: #555; }
+    .verdict { font: 13px/1.5 ui-monospace, monospace; margin: 0.5rem 0 1rem; }
+    .verdict b { color: #1a7f37; }
+    .cols { display: grid; grid-template-columns: 1fr; gap: 1.5rem; }
+    @media (min-width: 800px) { .cols { grid-template-columns: 1fr 1fr; } }
+    .panel { border: 1px solid #ddd; border-radius: 10px; padding: 1rem 1.25rem; }
+    .panel h2 { font-size: 1.05rem; margin: 0 0 0.5rem; display: flex; align-items: center; gap: 0.5rem; }
+    .badge { font: 11px/1 ui-monospace, monospace; padding: 3px 6px; border-radius: 4px; color: #fff; }
+    .badge.wasm { background: #654ff0; }
+    .badge.js { background: #b8860b; }
+    .timing { font: 13px/1.4 ui-monospace, monospace; margin: 0.3rem 0; }
+    .timing .ms { font-size: 1.7rem; font-weight: 700; }
+    .timing.wasm .ms { color: #654ff0; }
+    .timing.js .ms { color: #b8860b; }
+    ol.hits { font: 13px/1.6 ui-monospace, monospace; color: #333; padding-left: 1.5rem; }
+    ol.hits b { color: #654ff0; }
+    .hint { font-size: 0.85rem; color: #777; }
+  </style>
+</head>
+<body>
+  <h1>semanticsearch — cosine ranking: WebAssembly vs. JavaScript</h1>
+  <p class="lede">"Find similar content" compares your query against every document and ranks
+     the closest ones. That's a lot of number-crunching: <strong>WebAssembly</strong> does four
+     multiplications at once where <strong>JavaScript</strong> manages one, so it finishes sooner.
+     Both return the same ranking; only the time differs.</p>
+
+  <div class="controls">
+    <label>Corpus size
+      <select id="size">
+        <option>2000</option>
+        <option selected>10000</option>
+        <option>25000</option>
+        <option>50000</option>
+      </select>
+    </label>
+    <button class="go" id="go" disabled>Rank with both</button>
+  </div>
+
+  <div id="status">loading WASM kernel…</div>
+  <div class="verdict" id="verdict"></div>
+
+  <div class="cols">
+    <section class="panel">
+      <h2>WebAssembly <span class="badge wasm">SIMD</span></h2>
+      <p class="timing wasm"><span class="ms">—</span> <span class="unit"></span></p>
+      <ol class="hits" id="hits-wasm"></ol>
+    </section>
+    <section class="panel">
+      <h2>JavaScript <span class="badge js">scalar</span></h2>
+      <p class="timing js"><span class="ms">—</span> <span class="unit"></span></p>
+      <ol class="hits" id="hits-js"></ol>
+    </section>
+  </div>
+
+  <script type="module">
+    window.hlx = { codeBasePath: '' };
+    const WASM_URL = '/blocks/semanticsearch/semanticsearch.wasm';
+    const DIM = 384;
+    const RUNS = 5;
+    const TOPK = 8;
+    const CLUSTERS = ['Billing', 'Security', 'Onboarding', 'Integrations', 'Performance',
+      'Accessibility', 'Analytics', 'Localization', 'Media', 'Search', 'Email', 'Mobile'];
+
+    const $ = (id) => document.getElementById(id);
+    const statusEl = $('status');
+
+    const { createSemanticEngine, normalizeRows } =
+      await import('/blocks/semanticsearch/semanticsearch-engine.js');
+
+    let engineApi;
+    try {
+      engineApi = await createSemanticEngine(WASM_URL);
+      statusEl.textContent = 'WASM kernel ready · pick a corpus size and rank';
+      $('go').disabled = false;
+    } catch (err) {
+      statusEl.textContent = 'WASM kernel failed to load — see console.';
+      console.error(err);
+    }
+
+    function mulberry32(seed) {
+      let a = seed >>> 0;
+      return () => {
+        a |= 0; a = (a + 0x6d2b79f5) | 0;
+        let t = Math.imul(a ^ (a >>> 15), 1 | a);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+    }
+
+    // Synthetic clustered corpus + human-readable labels (cluster + running id).
+    function makeCorpus(count, seed) {
+      const rnd = mulberry32(seed);
+      const centers = new Float32Array(CLUSTERS.length * DIM);
+      for (let i = 0; i < centers.length; i += 1) centers[i] = rnd() * 2 - 1;
+      const flat = new Float32Array(count * DIM);
+      const labels = new Array(count);
+      for (let r = 0; r < count; r += 1) {
+        const c = r % CLUSTERS.length;
+        const base = r * DIM;
+        for (let i = 0; i < DIM; i += 1) flat[base + i] = centers[c * DIM + i] + (rnd() * 2 - 1) * 0.35;
+        labels[r] = `${CLUSTERS[c]} note #${r}`;
+      }
+      normalizeRows(flat, count, DIM);
+      return { flat, labels };
+    }
+
+    function cosineScoresJS(corpus, count, query) {
+      const out = new Float32Array(count);
+      for (let r = 0; r < count; r += 1) {
+        const b = r * DIM;
+        let s = 0;
+        for (let i = 0; i < DIM; i += 1) s += corpus[b + i] * query[i];
+        out[r] = s;
+      }
+      return out;
+    }
+
+    function topKFromScores(scores, k, exclude) {
+      const idx = [];
+      for (let i = 0; i < scores.length; i += 1) if (i !== exclude) idx.push(i);
+      idx.sort((a, b) => scores[b] - scores[a]);
+      return idx.slice(0, k);
+    }
+
+    function timeAvg(fn) {
+      fn();
+      const t0 = performance.now();
+      for (let i = 0; i < RUNS; i += 1) fn();
+      return (performance.now() - t0) / RUNS;
+    }
+
+    function renderHits(olId, indices, scores, labels) {
+      const ol = $(olId);
+      ol.textContent = '';
+      indices.forEach((i) => {
+        const li = document.createElement('li');
+        li.innerHTML = `<b>${(scores[i] * 100).toFixed(0)}%</b> ${labels[i]}`;
+        ol.append(li);
+      });
+    }
+
+    async function run() {
+      $('go').disabled = true;
+      const count = parseInt($('size').value, 10);
+      statusEl.textContent = `Building ${count.toLocaleString()} × ${DIM}-d corpus…`;
+      await new Promise((r) => setTimeout(r));
+      const { flat, labels } = makeCorpus(count, 0xC0FFEE ^ count);
+      const index = engineApi.index(flat, count, DIM);
+
+      // Query = an existing document's vector ("find similar to this one").
+      const queryIndex = 3;
+      const query = flat.slice(queryIndex * DIM, queryIndex * DIM + DIM);
+
+      statusEl.textContent = `Ranking ${count.toLocaleString()} documents…`;
+      await new Promise((r) => setTimeout(r));
+
+      let wasmScores;
+      const wasmMs = timeAvg(() => { wasmScores = index.scoreAll(query); });
+      let jsScores;
+      const jsMs = timeAvg(() => { jsScores = cosineScoresJS(flat, count, query); });
+
+      const wasmTop = topKFromScores(wasmScores, TOPK, queryIndex);
+      const jsTop = topKFromScores(jsScores, TOPK, queryIndex);
+      renderHits('hits-wasm', wasmTop, wasmScores, labels);
+      renderHits('hits-js', jsTop, jsScores, labels);
+
+      document.querySelector('.timing.wasm .ms').textContent = wasmMs.toFixed(1);
+      document.querySelector('.timing.wasm .unit').textContent = 'ms to rank';
+      document.querySelector('.timing.js .ms').textContent = jsMs.toFixed(1);
+      document.querySelector('.timing.js .unit').textContent = 'ms to rank';
+
+      let maxDelta = 0;
+      for (let i = 0; i < count; i += 1) {
+        const d = Math.abs(wasmScores[i] - jsScores[i]);
+        if (d > maxDelta) maxDelta = d;
+      }
+      const speed = (jsMs / wasmMs).toFixed(1);
+      $('verdict').innerHTML = maxDelta < 1e-3
+        ? `Same ranking (max score Δ ${maxDelta.toExponential(1)}) — WASM ranked it <b>~${speed}× faster</b>.`
+        : `Score mismatch Δ ${maxDelta.toExponential(1)} — check the console.`;
+      statusEl.textContent = `Done · query = “${labels[queryIndex]}” · averaged over ${RUNS} runs`;
+      $('go').disabled = false;
+    }
+
+    $('go').addEventListener('click', run);
+  </script>
+</body>
+</html>

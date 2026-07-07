@@ -1,0 +1,139 @@
+{
+  "name": "fuzzysearch",
+  "summary": "On-device 'elastic' search: typo-tolerant fuzzy matching (edit distance) + BM25 relevance ranking over an EDS query-index, fully client-side with no backend.",
+  "kernel": "assembly/fuzzysearch.ts",
+  "wasm": "blocks/fuzzysearch/fuzzysearch.wasm",
+  "block": "blocks/fuzzysearch/fuzzysearch.js",
+  "engine": "blocks/fuzzysearch/search-engine.js",
+  "benchmark": "blocks/fuzzysearch/fuzzysearch.bench.mjs",
+  "runtime": "stub",
+  "alignment": 8,
+  "imports": "none (release build; abort is removed by --noAssert)",
+  "model": {
+    "fuzzy": "Each query term is expanded over the vocabulary with restricted Damerau–Levenshtein (Optimal String Alignment) edit distance within an Elasticsearch-style AUTO fuzziness (0 edits for len<=2, 1 for len<=5, 2 otherwise), capped by maxEdits. Length filter + row-minimum early exit prune non-matches.",
+    "bm25": "score(D) = sum over query terms of max over matched vocab terms of [ fuzzyBoost * idf(t) * tf(t,D)*(k1+1) / (tf(t,D) + k1*(1 - b + b*|D|/avgdl)) ], where fuzzyBoost = 1 - editDistance/(maxEdits+1) and idf(t) = ln(1 + (N - df(t) + 0.5)/(df(t) + 0.5)). Taking the max matched term per query term per document avoids double-counting near-duplicate vocab terms.",
+    "idf": "idf is a pure function of df(t) and N, both known at index-build time, so the host precomputes idf[t] once; the kernel reads it (no transcendental math in the kernel, and the JS twin shares the same table)."
+  },
+  "exports": {
+    "memory": { "kind": "memory", "note": "linear memory, exported for host marshaling" },
+    "reset": {
+      "kind": "function",
+      "params": [],
+      "returns": "void",
+      "desc": "Rewind the bump allocator before laying out a fresh index."
+    },
+    "alloc": {
+      "kind": "function",
+      "params": [{ "name": "byteLen", "type": "i32" }],
+      "returns": "i32 (byte pointer)",
+      "desc": "Reserve byteLen bytes (8-byte aligned), growing memory as needed."
+    },
+    "scoreAll": {
+      "kind": "function",
+      "params": [
+        { "name": "idxPtr", "type": "i32", "desc": "byte ptr to the 56-byte index header (see memoryLayout.header)" },
+        { "name": "qCharsPtr", "type": "i32", "desc": "byte ptr to u16 query-term chars, concatenated" },
+        { "name": "qOffsetsPtr", "type": "i32", "desc": "byte ptr to i32 offsets[qTermCount+1] (u16 units) per query term" },
+        { "name": "qTermCount", "type": "i32", "desc": "number of query terms" },
+        { "name": "dpPtr", "type": "i32", "desc": "scratch: i32[(MAX_TERM+1)^2] edit-distance matrix" },
+        { "name": "bestPtr", "type": "i32", "desc": "scratch: f32[docCount] best-matched-term contribution per doc" },
+        { "name": "scoresPtr", "type": "i32", "desc": "byte ptr to f32 scores[docCount] (OUTPUT)" }
+      ],
+      "returns": "void",
+      "desc": "Writes one f32 BM25 score per document (>0 match, 0 = no match). Used by the benchmark to check WASM == JS; the shipped block uses searchTopK."
+    },
+    "searchTopK": {
+      "kind": "function",
+      "params": [
+        { "name": "idxPtr", "type": "i32" },
+        { "name": "qCharsPtr", "type": "i32" },
+        { "name": "qOffsetsPtr", "type": "i32" },
+        { "name": "qTermCount", "type": "i32" },
+        { "name": "dpPtr", "type": "i32" },
+        { "name": "bestPtr", "type": "i32" },
+        { "name": "scoresPtr", "type": "i32", "desc": "scratch: f32[docCount]" },
+        { "name": "k", "type": "i32", "desc": "max results to return" },
+        { "name": "outPtr", "type": "i32", "desc": "byte ptr to {i32 doc; f32 score}[k] (OUTPUT), best first" }
+      ],
+      "returns": "i32 (number of results written, <= k)",
+      "desc": "Fused fuzzy-BM25 score + bounded top-k selection. Ranks entirely in WASM (score desc, ties by lower doc index) and returns only the winners, so no full scores array or JS-side sort touches the main thread. This is the block's per-keystroke path."
+    }
+  },
+  "memoryLayout": [
+    {
+      "name": "header",
+      "view": "Int32Array/Float32Array (interleaved)",
+      "unit": "13 x 4-byte slots (56 bytes)",
+      "direction": "in",
+      "desc": "idx[0]=vocabCharsPtr, [1]=vocabOffsetsPtr, [2]=vocabCount, [3]=postOffsetsPtr, [4]=postDocsPtr, [5]=postTfPtr, [6]=docLenPtr, [7]=docCount, [8]=avgdl(f32), [9]=k1(f32), [10]=b(f32), [11]=maxEditsCap, [12]=idfPtr."
+    },
+    {
+      "name": "vocabChars",
+      "view": "Uint16Array",
+      "unit": "u16",
+      "length": "vocabOffsets[vocabCount]",
+      "direction": "in",
+      "desc": "All unique terms' lowercased char codes concatenated. Written once at init."
+    },
+    {
+      "name": "vocabOffsets",
+      "view": "Int32Array",
+      "unit": "i32",
+      "length": "vocabCount + 1",
+      "direction": "in",
+      "desc": "Start index (in u16 units) of each vocab term."
+    },
+    {
+      "name": "postOffsets / postDocs / postTf",
+      "view": "Int32Array / Int32Array / Float32Array",
+      "unit": "i32 / i32 / f32",
+      "length": "vocabCount+1 / P / P",
+      "direction": "in",
+      "desc": "CSR inverted index: term t's postings are [postOffsets[t], postOffsets[t+1]); each posting is (postDocs[p] docId, postTf[p] term frequency). df(t) = postOffsets[t+1]-postOffsets[t]."
+    },
+    {
+      "name": "idf",
+      "view": "Float32Array",
+      "unit": "f32",
+      "length": "vocabCount",
+      "direction": "in",
+      "desc": "Precomputed inverse document frequency per term (index metadata). Both the kernel and the JS twin read this same table."
+    },
+    {
+      "name": "docLen",
+      "view": "Float32Array",
+      "unit": "f32",
+      "length": "docCount",
+      "direction": "in",
+      "desc": "Token length of each document (BM25 length normalization)."
+    },
+    {
+      "name": "query",
+      "view": "Uint16Array + Int32Array offsets",
+      "unit": "u16 chars + i32 offsets",
+      "length": "<= MAX_QUERY_CHARS chars, <= MAX_QUERY_TERMS terms",
+      "direction": "in",
+      "desc": "Tokenized query terms, written every keystroke."
+    },
+    {
+      "name": "scores",
+      "view": "Float32Array",
+      "unit": "f32",
+      "length": "docCount",
+      "direction": "out/scratch",
+      "desc": "One BM25 score per document. scoreAll returns it; searchTopK uses it as scratch and returns only the top-k."
+    },
+    {
+      "name": "topk",
+      "view": "Int32Array",
+      "unit": "{i32 doc; f32 score} pair (8 bytes)",
+      "length": "k (<= 256)",
+      "direction": "out",
+      "desc": "searchTopK output: the top-k documents, best first. The host reads only the even (doc) slots."
+    }
+  ],
+  "marshaling": {
+    "rule": "Call reset(), then alloc() every buffer up front (alloc may grow memory and detach views), then create typed-array views over memory.buffer, then write the index + header. After init no re-grow happens, so per-keystroke calls reuse the same views.",
+    "boundaryCrossings": "1 wasm call per keystroke. The block calls searchTopK, which returns only the top-k doc indices; the full scores buffer never crosses back to JS."
+  }
+}

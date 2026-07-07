@@ -1,0 +1,78 @@
+.simhash {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.simhash .simhash-status {
+  margin: 0;
+  font-size: 0.9rem;
+  color: #555;
+}
+
+.simhash .simhash-heading {
+  margin: 0 0 0.5rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.simhash .simhash-empty {
+  margin: 0;
+  font-size: 0.9rem;
+  color: #777;
+}
+
+.simhash .simhash-groups {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1rem;
+}
+
+.simhash .simhash-group {
+  padding: 0.75rem 1rem;
+  background: #f2f0fb;
+  border: 1px solid #ddd8f5;
+  border-radius: 10px;
+}
+
+.simhash .simhash-group h4 {
+  margin: 0 0 0.5rem;
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #654ff0;
+}
+
+.simhash .simhash-group ul {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.simhash .simhash-group li {
+  font-size: 0.9rem;
+  color: #333;
+}
+
+.simhash .simhash-group a {
+  color: #654ff0;
+  text-decoration: none;
+}
+
+.simhash .simhash-group a:hover {
+  text-decoration: underline;
+}
+
+@media (width >= 600px) {
+  .simhash .simhash-groups {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (width >= 900px) {
+  .simhash .simhash-groups {
+    grid-template-columns: 1fr 1fr 1fr;
+  }
+}

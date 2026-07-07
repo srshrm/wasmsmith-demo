@@ -1,0 +1,61 @@
+{
+  "name": "imagehash",
+  "description": "SIMD perceptual hash (pHash) for near-duplicate image detection. A separable 2-D DCT is vectorized across 4 output frequencies with f32x4; JS has no vector type and runs the matrix multiply scalar. Fingerprints compare by Hamming distance.",
+  "build": {
+    "source": "assembly/imagehash.ts",
+    "flags": "-O3 --runtime stub --noAssert --enable simd",
+    "features": ["simd"]
+  },
+  "exports": {
+    "reset": { "params": [], "returns": "void", "doc": "rewind the bump allocator" },
+    "alloc": {
+      "params": [{ "name": "byteLen", "type": "i32" }],
+      "returns": "i32",
+      "doc": "reserve byteLen bytes (8-byte aligned), growing linear memory; returns byte ptr"
+    },
+    "dct8x8": {
+      "params": [
+        { "name": "grayPtr", "type": "i32" },
+        { "name": "cosPtr", "type": "i32" },
+        { "name": "tmpPtr", "type": "i32" },
+        { "name": "outCoeffPtr", "type": "i32" }
+      ],
+      "returns": "void",
+      "doc": "OUT f32[64]: top-left 8x8 low-frequency DCT block for one 32x32 grayscale image"
+    },
+    "dctBatch": {
+      "params": [
+        { "name": "grayPtr", "type": "i32" },
+        { "name": "count", "type": "i32" },
+        { "name": "cosPtr", "type": "i32" },
+        { "name": "tmpPtr", "type": "i32" },
+        { "name": "outCoeffPtr", "type": "i32" }
+      ],
+      "returns": "void",
+      "doc": "OUT f32[64*count]: DCT block per image for a whole library in one call"
+    },
+    "phashBatch": {
+      "params": [
+        { "name": "grayPtr", "type": "i32" },
+        { "name": "count", "type": "i32" },
+        { "name": "cosPtr", "type": "i32" },
+        { "name": "tmpPtr", "type": "i32" },
+        { "name": "coeffPtr", "type": "i32" },
+        { "name": "sortPtr", "type": "i32" },
+        { "name": "outPtr", "type": "i32" }
+      ],
+      "returns": "void",
+      "doc": "OUT u32[2*count]: 64-bit pHash per image (bit set where DCT coeff > block median)"
+    },
+    "memory": { "type": "WebAssembly.Memory", "doc": "default exported linear memory" }
+  },
+  "memory": [
+    { "name": "gray", "view": "f32", "unit": "float", "length": "32*32*count", "direction": "in", "note": "32x32 grayscale per image (host: canvas downscale + Rec.601 luma)" },
+    { "name": "cos", "view": "f32", "unit": "float", "length": "32*32", "direction": "in", "note": "host-built DCT matrix C[i][j] = alpha(j)*cos(pi*(2i+1)j/64)" },
+    { "name": "tmp", "view": "f32", "unit": "float", "length": "32*8", "direction": "scratch", "note": "row-DCT intermediate T[y][u]" },
+    { "name": "coeff", "view": "f32", "unit": "float", "length": "64 (or 64*count for dctBatch)", "direction": "out/scratch" },
+    { "name": "sort", "view": "f32", "unit": "float", "length": "64", "direction": "scratch", "note": "median selection scratch" },
+    { "name": "out", "view": "u32", "unit": "uint32", "length": "2*count", "direction": "out", "note": "phashBatch: {low, high} per image" }
+  ],
+  "notes": "DCT intermediates are f32 (SIMD) vs f64 in a scalar-JS twin, so coefficients agree to ~1e-3 and the resulting perceptual hash is identical in practice. Image downscale/grayscale is native canvas work; only the DCT sweep runs in WASM."
+}

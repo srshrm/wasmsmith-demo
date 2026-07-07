@@ -7,7 +7,10 @@
     "lint:js": "eslint .",
     "lint:css": "stylelint \"blocks/**/*.css\" \"styles/*.css\"",
     "lint": "npm run lint:js && npm run lint:css",
-    "lint:fix": "npm run lint:js -- --fix && npm run lint:css -- --fix"
+    "lint:fix": "npm run lint:js -- --fix && npm run lint:css -- --fix",
+    "asbuild": "bash .claude/skills/wasmsmith/scripts/compile.sh",
+    "asbuild:fuzzysearch": "bash .claude/skills/wasmsmith/scripts/compile.sh fuzzysearch",
+    "wasm:bench": "NODE_NO_WARNINGS=1 node .claude/skills/wasmsmith/scripts/benchmark.mjs"
   },
   "repository": {
     "type": "git",
@@ -20,7 +23,9 @@
   },
   "homepage": "https://github.com/adobe/aem-boilerplate#readme",
   "devDependencies": {
+    "@babel/core": "^8.0.1",
     "@babel/eslint-parser": "8.0.0",
+    "assemblyscript": "^0.28.19",
     "eslint": "8.57.1",
     "eslint-config-airbnb-base": "15.0.0",
     "eslint-plugin-import": "2.32.0",

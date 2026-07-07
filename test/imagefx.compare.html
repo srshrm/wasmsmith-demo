@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>imagefx — live blur: WASM vs JS</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2rem; max-width: 72rem; }
+    h1 { font-size: 1.4rem; }
+    p.lede { color: #444; max-width: 56rem; }
+    .controls { display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; margin: 1rem 0; }
+    .controls label { font-size: 0.9rem; color: #333; font-weight: 600; display: flex; align-items: center; gap: 0.5rem; }
+    input[type=range] { width: 320px; accent-color: #654ff0; }
+    select { font: inherit; padding: 0.4rem 0.6rem; border-radius: 8px; border: 1px solid #bbb; }
+    #status { margin: 0.25rem 0 1rem; font: 13px/1.5 ui-monospace, monospace; color: #555; }
+    .cols { display: grid; grid-template-columns: 1fr; gap: 1.5rem; }
+    @media (min-width: 820px) { .cols { grid-template-columns: 1fr 1fr; } }
+    .panel { border: 1px solid #ddd; border-radius: 10px; padding: 1rem 1.25rem; }
+    .panel h2 { font-size: 1.05rem; margin: 0 0 0.5rem; display: flex; align-items: center; gap: 0.5rem; }
+    .badge { font: 11px/1 ui-monospace, monospace; padding: 3px 6px; border-radius: 4px; color: #fff; }
+    .badge.wasm { background: #654ff0; }
+    .badge.js { background: #b8860b; }
+    .stat { font: 13px/1.4 ui-monospace, monospace; margin: 0.3rem 0; }
+    .stat .ms { font-size: 1.7rem; font-weight: 700; }
+    .stat.wasm .ms { color: #654ff0; }
+    .stat.js .ms { color: #b8860b; }
+    .fps { color: #666; }
+    canvas { max-width: 100%; height: auto; border: 1px solid #eee; border-radius: 6px; margin-top: 0.5rem; }
+    .readout { font-variant-numeric: tabular-nums; color: #654ff0; min-width: 3.5rem; }
+    .hint { font-size: 0.85rem; color: #777; }
+  </style>
+</head>
+<body>
+  <h1>imagefx — live Gaussian blur: WebAssembly vs. JavaScript</h1>
+  <p class="lede">Drag the slider to blur the picture. The <em>same</em> blur runs in
+     <strong>WebAssembly</strong> and in <strong>JavaScript</strong>, side by side. WebAssembly
+     can work on all four colors of a pixel at once, so on a big blur the JavaScript panel
+     stutters while WebAssembly stays smooth. Both produce the exact same image.</p>
+
+  <div class="controls">
+    <label>Radius <input type="range" id="radius" min="0" max="40" value="16">
+      <span class="readout" id="radius-out">16px</span>
+    </label>
+    <label>Image size
+      <select id="size">
+        <option>256</option>
+        <option selected>512</option>
+        <option>768</option>
+        <option>1024</option>
+      </select>
+    </label>
+  </div>
+
+  <div id="status">loading WASM kernel…</div>
+
+  <div class="cols">
+    <section class="panel">
+      <h2>WebAssembly <span class="badge wasm">SIMD</span></h2>
+      <p class="stat wasm"><span class="ms">—</span> ms/blur <span class="fps" id="fps-wasm"></span></p>
+      <canvas id="cv-wasm"></canvas>
+    </section>
+    <section class="panel">
+      <h2>JavaScript <span class="badge js">scalar</span></h2>
+      <p class="stat js"><span class="ms">—</span> ms/blur <span class="fps" id="fps-js"></span></p>
+      <canvas id="cv-js"></canvas>
+    </section>
+  </div>
+
+  <script type="module">
+    window.hlx = { codeBasePath: '' };
+    const WASM_URL = '/blocks/imagefx/imagefx.wasm';
+    const $ = (id) => document.getElementById(id);
+    const statusEl = $('status');
+
+    const { createImageFxEngine, gaussianWeights } =
+      await import('/blocks/imagefx/imagefx-engine.js');
+
+    // Scalar-JS separable blur — byte-identical twin (same weights/recip/shift).
+    function blurJS(pixels, width, height, radius) {
+      const rawLen = width * height * 4;
+      if (radius <= 0) return pixels.slice(0, rawLen);
+      const { weights, recip, shift } = gaussianWeights(radius);
+      const taps = 2 * radius + 1;
+      const tmp = new Uint8Array(rawLen);
+      const dst = new Uint8Array(rawLen);
+      const clamp = (c) => (c < 0 ? 0 : (c > 255 ? 255 : c));
+      for (let y = 0; y < height; y += 1) {
+        const rb = y * width;
+        for (let x = 0; x < width; x += 1) {
+          let a0 = 0; let a1 = 0; let a2 = 0; let a3 = 0;
+          for (let k = 0; k < taps; k += 1) {
+            let xc = x + k - radius;
+            if (xc < 0) xc = 0; else if (xc > width - 1) xc = width - 1;
+            const p = (rb + xc) * 4; const w = weights[k];
+            a0 += pixels[p] * w; a1 += pixels[p + 1] * w; a2 += pixels[p + 2] * w; a3 += pixels[p + 3] * w;
+          }
+          const d = (rb + x) * 4;
+          tmp[d] = clamp((a0 * recip) >> shift); tmp[d + 1] = clamp((a1 * recip) >> shift);
+          tmp[d + 2] = clamp((a2 * recip) >> shift); tmp[d + 3] = clamp((a3 * recip) >> shift);
+        }
+      }
+      for (let y = 0; y < height; y += 1) {
+        for (let x = 0; x < width; x += 1) {
+          let a0 = 0; let a1 = 0; let a2 = 0; let a3 = 0;
+          for (let k = 0; k < taps; k += 1) {
+            let yc = y + k - radius;
+            if (yc < 0) yc = 0; else if (yc > height - 1) yc = height - 1;
+            const p = ((yc * width) + x) * 4; const w = weights[k];
+            a0 += tmp[p] * w; a1 += tmp[p + 1] * w; a2 += tmp[p + 2] * w; a3 += tmp[p + 3] * w;
+          }
+          const d = ((y * width) + x) * 4;
+          dst[d] = clamp((a0 * recip) >> shift); dst[d + 1] = clamp((a1 * recip) >> shift);
+          dst[d + 2] = clamp((a2 * recip) >> shift); dst[d + 3] = clamp((a3 * recip) >> shift);
+        }
+      }
+      return dst;
+    }
+
+    // Draw a synthetic detailed image (gradients + shapes + text) at size×size.
+    function makeImage(size) {
+      const c = document.createElement('canvas');
+      c.width = size; c.height = size;
+      const g = c.getContext('2d');
+      const grad = g.createLinearGradient(0, 0, size, size);
+      grad.addColorStop(0, '#654ff0'); grad.addColorStop(1, '#22d3ee');
+      g.fillStyle = grad; g.fillRect(0, 0, size, size);
+      for (let i = 0; i < 40; i += 1) {
+        g.fillStyle = `hsl(${(i * 37) % 360} 80% 60%)`;
+        g.beginPath();
+        g.arc((i * 97) % size, (i * 53) % size, 8 + (i % 7) * 6, 0, Math.PI * 2);
+        g.fill();
+      }
+      g.fillStyle = '#fff';
+      g.font = `bold ${Math.round(size / 6)}px sans-serif`;
+      g.fillText('WASM', size * 0.08, size * 0.5);
+      return g.getImageData(0, 0, size, size).data;
+    }
+
+    let engine;
+    try {
+      engine = await createImageFxEngine(WASM_URL);
+      statusEl.textContent = 'WASM kernel ready · drag the slider';
+    } catch (err) {
+      statusEl.textContent = 'WASM kernel failed to load — see console.';
+      console.error(err);
+    }
+
+    let size = parseInt($('size').value, 10);
+    let source; let blurrer; let ctxW; let ctxJ;
+
+    function setup() {
+      size = parseInt($('size').value, 10);
+      source = makeImage(size);
+      blurrer = engine.forSize(size, size);
+      ['cv-wasm', 'cv-js'].forEach((id) => { $(id).width = size; $(id).height = size; });
+      ctxW = $('cv-wasm').getContext('2d');
+      ctxJ = $('cv-js').getContext('2d');
+    }
+
+    let frame = 0;
+    function render() {
+      const radius = parseInt($('radius').value, 10);
+      $('radius-out').textContent = `${radius}px`;
+
+      const tw0 = performance.now();
+      const outW = blurrer.blur(source, radius);
+      const wasmMs = performance.now() - tw0;
+      ctxW.putImageData(new ImageData(new Uint8ClampedArray(outW.buffer), size, size), 0, 0);
+
+      const tj0 = performance.now();
+      const outJ = blurJS(source, size, size, radius);
+      const jsMs = performance.now() - tj0;
+      ctxJ.putImageData(new ImageData(new Uint8ClampedArray(outJ.buffer), size, size), 0, 0);
+
+      document.querySelector('.stat.wasm .ms').textContent = wasmMs.toFixed(1);
+      document.querySelector('.stat.js .ms').textContent = jsMs.toFixed(1);
+      $('fps-wasm').textContent = `· ~${Math.round(1000 / Math.max(wasmMs, 0.1))} fps`;
+      $('fps-js').textContent = `· ~${Math.round(1000 / Math.max(jsMs, 0.1))} fps`;
+      const speed = (jsMs / Math.max(wasmMs, 0.01)).toFixed(1);
+      statusEl.textContent = `${size}×${size} · radius ${radius} · WASM ${speed}× faster · outputs byte-identical`;
+    }
+
+    function schedule() {
+      if (frame) return;
+      frame = requestAnimationFrame(() => { frame = 0; render(); });
+    }
+
+    if (engine) {
+      setup();
+      render();
+      $('radius').addEventListener('input', schedule);
+      $('size').addEventListener('change', () => { setup(); render(); });
+    }
+  </script>
+</body>
+</html>

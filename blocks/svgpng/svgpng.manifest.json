@@ -1,0 +1,80 @@
+{
+  "name": "svgpng",
+  "summary": "Encode an RGBA image (rasterized from an SVG by the canvas) into compressed PNG bytes.",
+  "kernel": "assembly/svgpng.ts",
+  "wasm": "blocks/svgpng/svgpng.wasm",
+  "block": "blocks/svgpng/svgpng.js",
+  "engine": "blocks/svgpng/svgpng-engine.js",
+  "benchmark": "blocks/svgpng/svgpng.bench.mjs",
+  "runtime": "stub",
+  "alignment": 8,
+  "imports": "none (release build)",
+  "note": "SVG->pixels rasterization is done by the native browser canvas (not WASM). This kernel does the compute-bound encode: PNG 'Up' filter + Adler-32 + DEFLATE (fixed Huffman + greedy LZ77). Output is a zlib stream = the PNG IDAT payload; the engine wraps it in PNG chunks (signature/IHDR/IDAT/IEND + CRC-32) in JS.",
+  "exports": {
+    "memory": { "kind": "memory", "note": "linear memory, exported for host marshaling" },
+    "reset": {
+      "kind": "function",
+      "params": [],
+      "returns": "void",
+      "desc": "Rewind the bump allocator before laying out buffers for a new image."
+    },
+    "alloc": {
+      "kind": "function",
+      "params": [{ "name": "byteLen", "type": "i32" }],
+      "returns": "i32 (byte pointer)",
+      "desc": "Reserve byteLen bytes (8-byte aligned), growing memory as needed."
+    },
+    "encode": {
+      "kind": "function",
+      "params": [
+        { "name": "pixelsPtr", "type": "i32", "desc": "byte ptr to u8 RGBA pixels[height*width*4]" },
+        { "name": "width", "type": "i32" },
+        { "name": "height", "type": "i32" },
+        { "name": "filteredPtr", "type": "i32", "desc": "scratch u8[height*(1+width*4)] for the filtered stream" },
+        { "name": "headPtr", "type": "i32", "desc": "scratch i32[32768] hash heads (cleared by the kernel)" },
+        { "name": "prevPtr", "type": "i32", "desc": "scratch i32[32768] hash chains" },
+        { "name": "outPtr", "type": "i32", "desc": "byte ptr for the zlib stream (OUTPUT); size >= filteredLen*2 + 1024" }
+      ],
+      "returns": "i32 (zlib stream length in bytes)",
+      "desc": "Filter + Adler-32 + DEFLATE the image in one pass; writes a zlib stream (2-byte header + DEFLATE + 4-byte Adler-32) to outPtr and returns its length."
+    }
+  },
+  "memoryLayout": [
+    {
+      "name": "pixels",
+      "view": "Uint8Array",
+      "unit": "u8",
+      "length": "height * width * 4",
+      "direction": "in",
+      "desc": "Row-major RGBA pixels from canvas.getImageData."
+    },
+    {
+      "name": "filtered",
+      "view": "Uint8Array",
+      "unit": "u8",
+      "length": "height * (1 + width*4)",
+      "direction": "scratch",
+      "desc": "PNG-filtered scanlines (filter byte + Up-filtered row), also the DEFLATE input."
+    },
+    {
+      "name": "head/prev",
+      "view": "Int32Array",
+      "unit": "i32",
+      "length": "32768 each",
+      "direction": "scratch",
+      "desc": "LZ77 hash-chain tables. head is cleared each call; prev is written before it is read."
+    },
+    {
+      "name": "out",
+      "view": "Uint8Array",
+      "unit": "u8",
+      "length": ">= filteredLen*2 + 1024",
+      "direction": "out",
+      "desc": "zlib stream (the PNG IDAT payload). The host reads outLen bytes and wraps them in PNG chunks."
+    }
+  ],
+  "marshaling": {
+    "rule": "Call reset(), then alloc() every buffer up front (alloc may grow memory and detach views), then snapshot the Uint8Array view over memory.buffer, then write pixels. After init no re-grow happens, so repeated encode() calls reuse the same views.",
+    "boundaryCrossings": "1 wasm call per image; payload is the whole image (chunky, not chatty). Only outLen bytes come back."
+  }
+}
