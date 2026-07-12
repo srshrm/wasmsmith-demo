@@ -88,6 +88,10 @@ header {
   height: var(--nav-height);
 }
 
+footer {
+  min-height: 110px;
+}
+
 header .header,
 footer .footer {
   visibility: hidden;

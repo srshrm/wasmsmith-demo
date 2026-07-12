@@ -97,6 +97,22 @@ export default async function decorate(block) {
 
   block.append(controls, canvas, status);
 
+  // Reserve the canvas's real aspect ratio as soon as we know it — a bare
+  // <canvas> defaults to 300x150 until width/height are set, which otherwise
+  // only happens once the (lazy, WASM-gated) blur pipeline finishes and
+  // causes a large layout shift. This probe is a plain image load (cheap,
+  // shares the browser's cache with the later rasterize() fetch) so it
+  // resolves well before the wasm engine is ready.
+  if (config.source) {
+    const probe = new Image();
+    probe.onload = () => {
+      if (probe.naturalWidth && probe.naturalHeight) {
+        canvas.style.aspectRatio = `${probe.naturalWidth} / ${probe.naturalHeight}`;
+      }
+    };
+    probe.src = resolveUrl(config.source);
+  }
+
   let blurrer = null;
   let source = null; // { pixels, width, height }
   let ctx = null;

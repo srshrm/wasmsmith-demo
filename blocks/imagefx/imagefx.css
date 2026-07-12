@@ -36,6 +36,7 @@
 .imagefx .imagefx-canvas {
   max-width: 100%;
   height: auto;
+  aspect-ratio: 1;
   border: 1px solid #ddd;
   border-radius: 8px;
 }
