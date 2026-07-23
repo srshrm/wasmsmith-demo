@@ -38,6 +38,15 @@ const SIZE_HINTS = {
   'gemma-2-2b-it-q4f16_1-MLC': '~1.6 GB',
 };
 
+// Intro copy per provider, so each block on a page explains what it actually
+// uses (built-in vs local vs download) instead of the generic cascade text.
+const INTRO = {
+  builtin: 'Summarise or ask about this page using Chrome’s built-in AI (Gemini Nano) — it runs on your device with no download and no server. Nothing you type leaves your device.',
+  local: 'Summarise or ask about this page using a local AI server (e.g. Ollama or LM Studio) running on your own machine — no download, and nothing you type leaves your device.',
+  download: 'Summarise or ask about this page using an AI model downloaded into your browser and run on your GPU (WebGPU). The first use downloads the model (cached afterwards); nothing you type leaves your device.',
+  auto: 'Summarise or ask about this page with AI that runs on your device — it prefers your browser’s built-in model or a local AI server, and only offers to download a model as a last resort. Nothing you type leaves your device.',
+};
+
 function readConfig(block) {
   const raw = readBlockConfig(block);
   const str = (v) => (Array.isArray(v) ? v.join(', ') : `${v ?? ''}`).trim();
@@ -71,7 +80,10 @@ function readConfig(block) {
     // Local server (Ollama / LM Studio) probe. Author can disable it or point it
     // elsewhere. Default: probe localhost, auto-pick the first installed model.
     localServer: localRaw !== 'false' && localRaw !== 'off' && localRaw !== 'no',
-    localBase: str(raw['local-base'] || raw.localbase) || 'http://localhost:11434',
+    // Strip trailing slash(es) so `${localBase}/api/tags` never doubles up — a
+    // `//` path makes Ollama redirect, and the redirect response carries no CORS
+    // header, which surfaces as a misleading "No Access-Control-Allow-Origin".
+    localBase: (str(raw['local-base'] || raw.localbase) || 'http://localhost:11434').replace(/\/+$/, ''),
     localModel: str(raw['local-model'] || raw.localmodel) || '',
     // Which provider to use. Default (blank) = Chrome's built-in model. `local`
     // forces the local AI server; `download` forces the WebLLM download; `auto`
@@ -360,9 +372,7 @@ export default async function decorate(block) {
 
   const intro = document.createElement('p');
   intro.className = 'webllm-intro';
-  intro.textContent = 'Summarise or ask about this page with AI that runs on your device — '
-    + 'it prefers your browser’s built-in model or a local AI server, and only offers to '
-    + 'download a model as a last resort. Nothing you type leaves your device.';
+  intro.textContent = INTRO[config.provider] || INTRO.auto;
 
   const status = document.createElement('p');
   status.className = 'webllm-status';
